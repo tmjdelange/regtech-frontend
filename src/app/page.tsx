@@ -12,6 +12,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
 
   async function search() {
     if (!query.trim()) return;
@@ -19,6 +20,7 @@ export default function Home() {
     const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
     const data = await res.json();
     setResults(data);
+    setSearched(true);
     setLoading(false);
   }
 
@@ -44,6 +46,9 @@ export default function Home() {
         </div>
 
         {loading && <p>Searching...</p>}
+        {!loading && searched && results.length === 0 && (
+          <p className="text-gray-500">No results found.</p>
+        )}
 
         <ul className="space-y-2">
           {results.map((r) => (
