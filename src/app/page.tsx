@@ -9,20 +9,9 @@ type SearchResult = {
 };
 
 export default function Home() {
-  const [newDoc, setNewDoc] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
-
-  async function addDocument() {
-    if (!newDoc.trim()) return;
-    await fetch("/api/documents", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: newDoc }),
-    });
-    setNewDoc("");
-  }
 
   async function search() {
     if (!query.trim()) return;
@@ -36,23 +25,6 @@ export default function Home() {
   return (
     <main className="max-w-2xl mx-auto p-8 space-y-8">
       <h1 className="text-2xl font-bold">Regtech Document Search</h1>
-
-      <section className="space-y-2">
-        <h2 className="font-semibold">Add a document</h2>
-        <textarea
-          className="w-full border rounded p-2"
-          rows={3}
-          value={newDoc}
-          onChange={(e) => setNewDoc(e.target.value)}
-          placeholder="Paste regulatory text..."
-        />
-        <button
-          onClick={addDocument}
-          className="bg-black text-white px-4 py-2 rounded"
-        >
-          Add
-        </button>
-      </section>
 
       <section className="space-y-2">
         <h2 className="font-semibold">Search</h2>
