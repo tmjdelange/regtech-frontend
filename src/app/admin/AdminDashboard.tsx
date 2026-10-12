@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type AdminDocument = {
@@ -13,6 +13,16 @@ type AdminDocument = {
   created_at: string;
 };
 
+type DocumentFields = {
+  title: string;
+  content: string;
+  country: string;
+  category: string;
+  source_url: string;
+};
+
+type AdminDocumentDetail = AdminDocument & { content: string };
+
 type SkippedRow = { row: number; reason: string };
 type UploadResult = { inserted: number; skipped: SkippedRow[] };
 
@@ -23,7 +33,11 @@ const PAGE_SIZE = 25;
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const data = await res.json().catch(() => null);
-  return data?.error ?? data?.detail ?? fallback;
+  // FastAPI validation errors put a list in `detail`, which isn't displayable.
+  for (const message of [data?.error, data?.detail]) {
+    if (typeof message === "string") return message;
+  }
+  return fallback;
 }
 
 export default function AdminDashboard() {
@@ -136,6 +150,131 @@ export default function AdminDashboard() {
       setDocuments((prev) =>
         prev.map((d) => (d.id === doc.id ? { ...d, verified: !next } : d))
       );
+    }
+  }
+
+  // --- Edit and delete ---
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<DocumentFields | null>(null);
+  const [editWasVerified, setEditWasVerified] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditForm(null);
+    setEditError(null);
+  }
+
+  async function startEdit(doc: AdminDocument) {
+    setConfirmDeleteId(null);
+    setActionMessage(null);
+    setActionError(null);
+    setEditingId(doc.id);
+    setEditForm(null);
+    setEditError(null);
+    setEditLoading(true);
+    try {
+      // The listing leaves out content, so fetch the full record.
+      const res = await fetch(`/api/admin/documents/${doc.id}`);
+      if (res.status === 401) setSessionExpired(true);
+      if (!res.ok) {
+        setEditError(await errorMessage(res, "Failed to load the document."));
+        return;
+      }
+      const data: AdminDocumentDetail = await res.json();
+      setEditForm({
+        title: data.title ?? "",
+        content: data.content,
+        country: data.country ?? "",
+        category: data.category ?? "",
+        source_url: data.source_url ?? "",
+      });
+      setEditWasVerified(data.verified);
+    } catch {
+      setEditError("Failed to load the document.");
+    } finally {
+      setEditLoading(false);
+    }
+  }
+
+  async function saveEdit() {
+    if (editingId === null || !editForm) return;
+    if (!editForm.content.trim()) {
+      setEditError("Content can't be empty.");
+      return;
+    }
+    setSaving(true);
+    setEditError(null);
+    try {
+      const res = await fetch(`/api/admin/documents/${editingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm),
+      });
+      if (res.status === 401) setSessionExpired(true);
+      if (!res.ok) {
+        setEditError(await errorMessage(res, "Failed to save changes."));
+        return;
+      }
+      const updated: AdminDocumentDetail = await res.json();
+      setDocuments((prev) =>
+        prev.map((d) =>
+          d.id === updated.id
+            ? {
+                id: updated.id,
+                title: updated.title,
+                country: updated.country,
+                category: updated.category,
+                source_url: updated.source_url,
+                verified: updated.verified,
+                created_at: updated.created_at,
+              }
+            : d
+        )
+      );
+      setActionMessage(
+        editWasVerified && !updated.verified
+          ? `Saved document ${updated.id}. It's now unverified until it's reviewed again.`
+          : `Saved document ${updated.id}.`
+      );
+      cancelEdit();
+    } catch {
+      setEditError("Failed to save changes.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteDocument(doc: AdminDocument) {
+    setDeletingId(doc.id);
+    setActionMessage(null);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/admin/documents/${doc.id}`, {
+        method: "DELETE",
+      });
+      if (res.status === 401) setSessionExpired(true);
+      if (!res.ok) {
+        setActionError(await errorMessage(res, "Failed to delete the document."));
+        return;
+      }
+      if (editingId === doc.id) cancelEdit();
+      setConfirmDeleteId(null);
+      setActionMessage(`Deleted "${doc.title ?? `document ${doc.id}`}".`);
+      // Reload so the page refills; step back if this emptied the last page.
+      loadDocuments(
+        documents.length === 1 && offset > 0 ? offset - PAGE_SIZE : offset
+      );
+    } catch {
+      setActionError("Failed to delete the document.");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -271,6 +410,13 @@ export default function AdminDashboard() {
           />
         </div>
 
+        {actionMessage && (
+          <p role="status" className="text-sm text-green-700">
+            {actionMessage}
+          </p>
+        )}
+        {actionError && <p className="text-sm text-red-600">{actionError}</p>}
+
         {docsLoading && <p>Loading...</p>}
         {docsError && <p className="text-sm text-red-600">{docsError}</p>}
 
@@ -285,40 +431,106 @@ export default function AdminDashboard() {
                   <th className="border p-1">Source</th>
                   <th className="border p-1">Created</th>
                   <th className="border p-1">Verified</th>
+                  <th className="border p-1">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredDocuments.map((d) => (
-                  <tr key={d.id}>
-                    <td className="border p-1">{d.title ?? "—"}</td>
-                    <td className="border p-1">{d.country ?? "—"}</td>
-                    <td className="border p-1">{d.category ?? "—"}</td>
-                    <td className="border p-1">
-                      {d.source_url ? (
-                        <a
-                          href={d.source_url}
-                          target="_blank"
-                          rel="noreferrer"
+                  <Fragment key={d.id}>
+                    <tr>
+                      <td className="border p-1">{d.title ?? "—"}</td>
+                      <td className="border p-1">{d.country ?? "—"}</td>
+                      <td className="border p-1">{d.category ?? "—"}</td>
+                      <td className="border p-1">
+                        {d.source_url ? (
+                          <a
+                            href={d.source_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline"
+                          >
+                            link
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="border p-1">
+                        {new Date(d.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="border p-1">
+                        <button
+                          onClick={() => toggleVerified(d)}
                           className="underline"
                         >
-                          link
-                        </a>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="border p-1">
-                      {new Date(d.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="border p-1">
-                      <button
-                        onClick={() => toggleVerified(d)}
-                        className="underline"
-                      >
-                        {d.verified ? "Verified" : "Unverified"}
-                      </button>
-                    </td>
-                  </tr>
+                          {d.verified ? "Verified" : "Unverified"}
+                        </button>
+                      </td>
+                      <td className="border p-1 whitespace-nowrap">
+                        {confirmDeleteId === d.id ? (
+                          <span className="flex gap-2 items-center">
+                            <span>Delete permanently?</span>
+                            <button
+                              onClick={() => deleteDocument(d)}
+                              disabled={deletingId === d.id}
+                              className="bg-red-600 text-white px-2 py-0.5 rounded disabled:opacity-50"
+                            >
+                              {deletingId === d.id ? "Deleting..." : "Yes, delete"}
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteId(null)}
+                              disabled={deletingId === d.id}
+                              className="underline"
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="flex gap-3">
+                            <button
+                              onClick={() =>
+                                editingId === d.id ? cancelEdit() : startEdit(d)
+                              }
+                              className="underline"
+                            >
+                              {editingId === d.id ? "Close" : "Edit"}
+                            </button>
+                            <button
+                              onClick={() => {
+                                setActionMessage(null);
+                                setActionError(null);
+                                setConfirmDeleteId(d.id);
+                              }}
+                              className="underline text-red-600"
+                            >
+                              Delete
+                            </button>
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                    {editingId === d.id && (
+                      <tr>
+                        <td colSpan={7} className="border p-3 bg-gray-50">
+                          {editLoading && <p>Loading document...</p>}
+                          {editForm && (
+                            <EditDocumentForm
+                              id={d.id}
+                              form={editForm}
+                              wasVerified={editWasVerified}
+                              saving={saving}
+                              onChange={setEditForm}
+                              onSave={saveEdit}
+                              onCancel={cancelEdit}
+                            />
+                          )}
+                          {editError && (
+                            <p className="text-sm text-red-600 mt-2">{editError}</p>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -393,5 +605,89 @@ export default function AdminDashboard() {
         </ul>
       </section>
     </main>
+  );
+}
+
+const EDIT_FIELDS: { key: Exclude<keyof DocumentFields, "content">; label: string }[] = [
+  { key: "title", label: "Title" },
+  { key: "country", label: "Country" },
+  { key: "category", label: "Category" },
+  { key: "source_url", label: "Source URL" },
+];
+
+function EditDocumentForm({
+  id,
+  form,
+  wasVerified,
+  saving,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  id: number;
+  form: DocumentFields;
+  wasVerified: boolean;
+  saving: boolean;
+  onChange: (form: DocumentFields) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave();
+      }}
+      className="space-y-3"
+    >
+      <p className="text-sm text-gray-600">
+        {wasVerified
+          ? "This document is verified. Changing its title, content or source URL will mark it unverified, removing it from public search and the checklist until it's verified again."
+          : "Changing the title or content re-computes the document's search embedding."}
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {EDIT_FIELDS.map(({ key, label }) => (
+          <label key={key} className="block text-sm space-y-1">
+            <span className="font-medium">{label}</span>
+            <input
+              value={form[key]}
+              onChange={(e) => onChange({ ...form, [key]: e.target.value })}
+              className="w-full border rounded p-2 bg-white"
+            />
+          </label>
+        ))}
+      </div>
+      <p className="text-xs text-gray-500">
+        The UK import checklist finds its sources by exact title, so renaming a
+        source document drops the matching check.
+      </p>
+      <label className="block text-sm space-y-1">
+        <span className="font-medium">Content</span>
+        <textarea
+          value={form.content}
+          onChange={(e) => onChange({ ...form, content: e.target.value })}
+          rows={8}
+          required
+          className="w-full border rounded p-2 bg-white font-mono text-xs"
+        />
+      </label>
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={saving}
+          className="bg-black text-white px-4 py-2 rounded disabled:opacity-50"
+        >
+          {saving ? "Saving..." : `Save document ${id}`}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          className="border px-4 py-2 rounded"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
