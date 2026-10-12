@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 type SearchResult = {
@@ -27,6 +28,19 @@ export default function Home() {
   return (
     <main className="max-w-2xl mx-auto p-8 space-y-8">
       <h1 className="text-2xl font-bold">Regtech Document Search</h1>
+
+      <section className="border rounded p-4 space-y-2">
+        <h2 className="font-semibold">Importing a soft drink into the UK?</h2>
+        <p className="text-gray-700">
+          Answer a few questions and get a checklist of what to act on.
+        </p>
+        <Link
+          href="/check"
+          className="inline-block bg-black text-white px-4 py-2 rounded"
+        >
+          Check my product
+        </Link>
+      </section>
 
       <section className="space-y-2">
         <h2 className="font-semibold">Search</h2>

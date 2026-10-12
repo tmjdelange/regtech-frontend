@@ -1,1 +1,29 @@
 @import "tailwindcss";
+
+@media print {
+  @page {
+    margin: 15mm;
+  }
+
+  body {
+    font-size: 11pt;
+  }
+
+  /* Keep the status colours on paper; the icons and labels still carry the
+     meaning when printed in greyscale. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Links aren't clickable on paper, so print the address after each one. */
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 9pt;
+    word-break: break-all;
+  }
+
+  summary {
+    list-style: none;
+  }
+}
