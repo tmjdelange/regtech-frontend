@@ -23,8 +23,16 @@ type DocumentFields = {
 
 type AdminDocumentDetail = AdminDocument & { content: string };
 
-type SkippedRow = { row: number; reason: string };
-type UploadResult = { inserted: number; skipped: SkippedRow[] };
+type UploadOutcome = "inserted" | "updated" | "skipped" | "failed";
+type UploadRow = {
+  row: number;
+  title: string | null;
+  country: string | null;
+  result: UploadOutcome;
+  reason: string | null;
+  changed: string[];
+};
+type UploadResult = Record<UploadOutcome, number> & { rows: UploadRow[] };
 
 type PublicSearchResult = { id: number; content: string; distance: number };
 type AdminSearchResult = PublicSearchResult & { verified: boolean };
@@ -359,22 +367,38 @@ export default function AdminDashboard() {
         {uploadError && <p className="text-sm text-red-600">{uploadError}</p>}
         {uploadResult && (
           <div className="text-sm space-y-2">
-            <p>Inserted: {uploadResult.inserted}</p>
-            {uploadResult.skipped.length > 0 && (
+            <p>
+              Inserted: {uploadResult.inserted} · Updated:{" "}
+              {uploadResult.updated} · Unchanged: {uploadResult.skipped} ·
+              Failed: {uploadResult.failed}
+            </p>
+            {uploadResult.rows.some(
+              (r) => r.result === "updated" || r.result === "failed"
+            ) && (
               <table className="w-full border text-left">
                 <thead>
                   <tr>
                     <th className="border p-1">Row</th>
-                    <th className="border p-1">Reason</th>
+                    <th className="border p-1">Title</th>
+                    <th className="border p-1">Result</th>
+                    <th className="border p-1">Details</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {uploadResult.skipped.map((s) => (
-                    <tr key={s.row}>
-                      <td className="border p-1">{s.row}</td>
-                      <td className="border p-1">{s.reason}</td>
-                    </tr>
-                  ))}
+                  {uploadResult.rows
+                    .filter((r) => r.result === "updated" || r.result === "failed")
+                    .map((r) => (
+                      <tr key={r.row}>
+                        <td className="border p-1">{r.row}</td>
+                        <td className="border p-1">{r.title ?? "(no title)"}</td>
+                        <td className="border p-1">{r.result}</td>
+                        <td className="border p-1">
+                          {r.changed.length > 0
+                            ? `Changed: ${r.changed.join(", ")} (now unverified)`
+                            : r.reason}
+                        </td>
+                      </tr>
+                    ))}
                 </tbody>
               </table>
             )}
