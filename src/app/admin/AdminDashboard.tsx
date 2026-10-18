@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ALL_DESTINATIONS, NL_ORIGINS, RoutePicker } from "../../lib/countries";
 
 type AdminDocument = {
   id: number;
@@ -34,7 +35,13 @@ type UploadRow = {
 };
 type UploadResult = Record<UploadOutcome, number> & { rows: UploadRow[] };
 
-type PublicSearchResult = { id: number; content: string; distance: number };
+type PublicSearchResult = {
+  id: number;
+  title: string | null;
+  country: string | null;
+  content: string;
+  distance: number;
+};
 type AdminSearchResult = PublicSearchResult & { verified: boolean };
 
 const PAGE_SIZE = 25;
@@ -289,6 +296,7 @@ export default function AdminDashboard() {
   // --- Test search panel ---
   const [searchQuery, setSearchQuery] = useState("");
   const [searchView, setSearchView] = useState<"public" | "admin">("public");
+  const [searchDestination, setSearchDestination] = useState<string | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [publicResults, setPublicResults] = useState<PublicSearchResult[]>([]);
@@ -296,13 +304,19 @@ export default function AdminDashboard() {
 
   async function runSearch() {
     if (!searchQuery.trim()) return;
+    if (searchView === "public" && !searchDestination) {
+      setSearchError("Public search needs a destination.");
+      return;
+    }
     setSearchLoading(true);
     setSearchError(null);
     try {
+      const qs = new URLSearchParams({ query: searchQuery });
+      if (searchDestination) qs.set("destination", searchDestination);
       const url =
         searchView === "public"
-          ? `/api/search?query=${encodeURIComponent(searchQuery)}`
-          : `/api/admin/search?query=${encodeURIComponent(searchQuery)}`;
+          ? `/api/search?${qs.toString()}`
+          : `/api/admin/search?${qs.toString()}`;
       const res = await fetch(url);
       if (res.status === 401) setSessionExpired(true);
       if (!res.ok) {
@@ -580,6 +594,17 @@ export default function AdminDashboard() {
 
       <section className="space-y-2">
         <h2 className="font-semibold">Test search</h2>
+        <RoutePicker
+          origins={NL_ORIGINS}
+          destinations={ALL_DESTINATIONS}
+          destination={searchDestination}
+          onDestinationChange={setSearchDestination}
+          allowAll
+        />
+        <p className="text-sm text-gray-600">
+          The public view needs a destination; the admin view also searches
+          all destinations.
+        </p>
         <div className="flex gap-2">
           <input
             className="flex-1 border rounded p-2"
@@ -611,9 +636,10 @@ export default function AdminDashboard() {
         <ul className="space-y-2">
           {results.map((r) => (
             <li key={r.id} className="border rounded p-3">
+              {r.title && <p className="font-medium">{r.title}</p>}
               <p>{r.content}</p>
               <p className="text-sm text-gray-500">
-                distance: {r.distance.toFixed(4)}
+                {r.country ?? "no country"} · distance: {r.distance.toFixed(4)}
                 {"verified" in r && (
                   <span
                     className={`ml-2 ${

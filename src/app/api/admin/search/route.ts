@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
 
   const params = request.nextUrl.searchParams;
   const qs = new URLSearchParams();
-  for (const key of ["query", "country", "category", "verified"]) {
+  for (const key of ["query", "country", "destination", "category", "verified"]) {
     const value = params.get(key);
     if (value !== null) qs.set(key, value);
   }

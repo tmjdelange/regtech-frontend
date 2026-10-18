@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { RoutePicker, useCountries, useRouteQuery } from "../../lib/countries";
 
 // Mirrors ChecklistProfile / ChecklistResponse in the backend's schemas.py.
 type Status =
@@ -22,7 +23,10 @@ type ChecklistItem = {
   not_assessed_reason: "source_missing" | "source_unverified" | null;
 };
 
-type ChecklistResult = {
+type ChecklistRoute = { origin: string; destination: string };
+
+type ChecklistResult = ChecklistRoute & {
+  checklist_available: true;
   headline: string;
   counts: Record<Status, number>;
   items: ChecklistItem[];
@@ -32,7 +36,20 @@ type ChecklistResult = {
   disclaimer: string;
 };
 
-type ChecklistOutOfScope = { message: string };
+type ChecklistOutOfScope = ChecklistRoute & {
+  checklist_available: true;
+  message: string;
+};
+
+type ChecklistUnavailable = ChecklistRoute & {
+  checklist_available: false;
+  message: string;
+};
+
+const UNAVAILABLE_MESSAGE =
+  "Checklist not available for this destination yet. You can still search the requirements.";
+const EU_EXCISE_VAT_NOTE =
+  "Excise and VAT for intra-EU shipments are not covered yet.";
 
 type Option = { value: string; label: string };
 type RadioQuestion = {
@@ -300,7 +317,15 @@ function hostnameOf(url: string): string {
   }
 }
 
-function Report({ result, stale }: { result: ChecklistResult; stale: boolean }) {
+function Report({
+  result,
+  stale,
+  routeLabel,
+}: {
+  result: ChecklistResult;
+  stale: boolean;
+  routeLabel: string;
+}) {
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -334,6 +359,8 @@ function Report({ result, stale }: { result: ChecklistResult; stale: boolean }) 
           check again to update it.
         </p>
       )}
+
+      <p className="font-medium">{routeLabel}</p>
 
       <p className="text-lg">{result.headline}</p>
 
@@ -435,6 +462,18 @@ function useExpandDetailsForPrint() {
 }
 
 export default function ProductChecker() {
+  const { countries, error: countriesError } = useCountries();
+  const destinations = countries?.destinations ?? [];
+  const { from, to, update } = useRouteQuery((code) =>
+    destinations.some((d) => d.code === code)
+  );
+  const destination = destinations.find((d) => d.code === to) ?? null;
+  const originName =
+    countries?.origins.find((o) => o.code === from)?.name ?? from;
+  const routeLabel = destination
+    ? `From ${originName} to ${destination.name}`
+    : "";
+
   const [answers, setAnswers] = useState<Answers>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [attempted, setAttempted] = useState(false);
@@ -451,6 +490,13 @@ export default function ProductChecker() {
     const next = { ...answers, [name]: value };
     setAnswers(next);
     if (attempted) setErrors(validate(next));
+  }
+
+  function onDestinationChange(code: string | null) {
+    update({ to: code });
+    setRequestError(null);
+    setResult(null);
+    setOutOfScope(null);
   }
 
   function loadExample() {
@@ -475,13 +521,15 @@ export default function ProductChecker() {
       return;
     }
 
+    if (!to) return;
     const profile = buildProfile(answers);
     setLoading(true);
     setRequestError(null);
     setResult(null);
     setOutOfScope(null);
     try {
-      const res = await fetch("/api/checklist", {
+      const qs = new URLSearchParams({ destination: to, origin: from });
+      const res = await fetch(`/api/checklist?${qs.toString()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(profile),
@@ -495,11 +543,13 @@ export default function ProductChecker() {
               ? `${data.error}. Please try again in a moment.`
               : `Something went wrong (error ${res.status}). Please try again in a moment.`
         );
+      } else if (data.checklist_available === false) {
+        setRequestError((data as ChecklistUnavailable).message);
       } else if ("message" in data) {
         setOutOfScope((data as ChecklistOutOfScope).message);
       } else {
         setResult(data as ChecklistResult);
-        setSubmittedProfile(JSON.stringify(profile));
+        setSubmittedProfile(JSON.stringify({ to, profile }));
       }
     } catch {
       setRequestError(
@@ -512,7 +562,8 @@ export default function ProductChecker() {
 
   const errorCount = Object.keys(errors).length;
   const stale =
-    result !== null && submittedProfile !== JSON.stringify(buildProfile(answers));
+    result !== null &&
+    submittedProfile !== JSON.stringify({ to, profile: buildProfile(answers) });
 
   return (
     <main className="max-w-2xl mx-auto p-8 space-y-8">
@@ -522,70 +573,108 @@ export default function ProductChecker() {
         </Link>
         <h1 className="text-2xl font-bold">Check my product</h1>
         <p className="text-gray-700">
-          Answer a few questions about a soft drink you want to import into the
-          UK. We&apos;ll list what to act on, what to confirm and what&apos;s
-          already covered.
+          Answer a few questions about a soft drink you want to export
+          {destination ? ` to ${destination.name}` : ""}. We&apos;ll list what
+          to act on, what to confirm and what&apos;s already covered.
         </p>
-      </div>
-      <h1 className="hidden print:block text-2xl font-bold">
-        UK import check — report
-      </h1>
-
-      <form
-        ref={formRef}
-        onSubmit={onSubmit}
-        noValidate
-        className="space-y-8 print:hidden"
-      >
-        <button
-          type="button"
-          onClick={loadExample}
-          className="border border-black px-4 py-2 rounded"
-        >
-          Load example
-        </button>
-
-        {errorCount > 0 && (
-          <p role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-red-900">
-            {errorCount === 1
-              ? "1 answer needs your attention."
-              : `${errorCount} answers need your attention.`}
+        {countriesError && (
+          <p className="text-sm text-red-600">{countriesError}</p>
+        )}
+        {countries && (
+          <RoutePicker
+            origins={countries.origins}
+            destinations={destinations}
+            destination={to}
+            onDestinationChange={onDestinationChange}
+          />
+        )}
+        {countries && !destination && (
+          <p className="text-sm text-gray-600">
+            Choose where you&apos;re exporting to.
           </p>
         )}
+      </div>
+      <h1 className="hidden print:block text-2xl font-bold">
+        {destination
+          ? `Export check, ${originName} to ${destination.name} — report`
+          : "Export check — report"}
+      </h1>
 
-        {GROUPS.map((group) => (
-          <fieldset key={group.title} className="space-y-6 border-t pt-4">
-            <legend className="text-lg font-semibold pr-2">{group.title}</legend>
-            {group.questions.map((q) =>
-              q.kind === "number" ? (
-                <NumberInput
-                  key={q.name}
-                  question={q}
-                  value={answers[q.name] ?? ""}
-                  error={errors[q.name]}
-                  onChange={(v) => setAnswer(q.name, v)}
-                />
-              ) : (
-                <RadioGroup
-                  key={q.name}
-                  question={q}
-                  value={answers[q.name] ?? ""}
-                  error={errors[q.name]}
-                  onChange={(v) => setAnswer(q.name, v)}
-                />
-              )
-            )}
-          </fieldset>
-        ))}
+      {destination?.eu_member && (
+        <p className="rounded border border-gray-300 bg-gray-50 p-3 text-gray-800">
+          {EU_EXCISE_VAT_NOTE}
+        </p>
+      )}
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="bg-black text-white px-4 py-2 rounded disabled:opacity-60"
+      {destination && !destination.checklist_available && (
+        <div className="rounded border border-gray-300 bg-gray-50 p-4 space-y-2 print:hidden">
+          <p>{UNAVAILABLE_MESSAGE}</p>
+          <Link
+            href={`/?from=${from}&to=${destination.code}`}
+            className="underline"
+          >
+            Search the requirements for {destination.name}
+          </Link>
+        </div>
+      )}
+
+      {destination?.checklist_available && (
+        <form
+          ref={formRef}
+          onSubmit={onSubmit}
+          noValidate
+          className="space-y-8 print:hidden"
         >
-          {loading ? "Checking…" : "Check my product"}
-        </button>
-      </form>
+          <button
+            type="button"
+            onClick={loadExample}
+            className="border border-black px-4 py-2 rounded"
+          >
+            Load example
+          </button>
+
+          {errorCount > 0 && (
+            <p role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-red-900">
+              {errorCount === 1
+                ? "1 answer needs your attention."
+                : `${errorCount} answers need your attention.`}
+            </p>
+          )}
+
+          {GROUPS.map((group) => (
+            <fieldset key={group.title} className="space-y-6 border-t pt-4">
+              <legend className="text-lg font-semibold pr-2">{group.title}</legend>
+              {group.questions.map((q) =>
+                q.kind === "number" ? (
+                  <NumberInput
+                    key={q.name}
+                    question={q}
+                    value={answers[q.name] ?? ""}
+                    error={errors[q.name]}
+                    onChange={(v) => setAnswer(q.name, v)}
+                  />
+                ) : (
+                  <RadioGroup
+                    key={q.name}
+                    question={q}
+                    value={answers[q.name] ?? ""}
+                    error={errors[q.name]}
+                    onChange={(v) => setAnswer(q.name, v)}
+                  />
+                )
+              )}
+            </fieldset>
+          ))}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-black text-white px-4 py-2 rounded disabled:opacity-60"
+          >
+            {loading ? "Checking…" : "Check my product"}
+          </button>
+        </form>
+      )}
 
       <div aria-live="polite" className="space-y-4">
         {loading && <p className="print:hidden">Checking your answers…</p>}
@@ -602,7 +691,9 @@ export default function ProductChecker() {
         )}
       </div>
 
-      {result && <Report result={result} stale={stale} />}
+      {result && (
+        <Report result={result} stale={stale} routeLabel={routeLabel} />
+      )}
 
       <footer className="border-t pt-4 text-sm text-gray-600">
         <p>{DISCLAIMER}</p>

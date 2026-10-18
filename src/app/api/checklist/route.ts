@@ -8,9 +8,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const params = request.nextUrl.searchParams;
+  const qs = new URLSearchParams();
+  for (const key of ["destination", "origin"]) {
+    const value = params.get(key);
+    if (value !== null) qs.set(key, value);
+  }
+
   let res: Response;
   try {
-    res = await fetch(`${process.env.BACKEND_URL}/checklist/evaluate`, {
+    res = await fetch(`${process.env.BACKEND_URL}/checklist/evaluate?${qs.toString()}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
