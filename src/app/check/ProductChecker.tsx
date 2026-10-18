@@ -4,7 +4,12 @@ import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
 
 // Mirrors ChecklistProfile / ChecklistResponse in the backend's schemas.py.
-type Status = "action_needed" | "confirm" | "covered" | "not_applicable";
+type Status =
+  | "action_needed"
+  | "confirm"
+  | "covered"
+  | "not_applicable"
+  | "not_assessed";
 
 type ChecklistItem = {
   id: string;
@@ -14,13 +19,14 @@ type ChecklistItem = {
   source_url: string | null;
   source_excerpt: string;
   reviewed: boolean;
+  not_assessed_reason: "source_missing" | "source_unverified" | null;
 };
 
 type ChecklistResult = {
   headline: string;
   counts: Record<Status, number>;
   items: ChecklistItem[];
-  checks_covered: number;
+  checks_assessed: number;
   checks_total: number;
   scope: string;
   disclaimer: string;
@@ -253,9 +259,21 @@ const STATUS_META: Record<
     chip: "bg-gray-50 text-gray-800 border-gray-300",
     card: "border-l-gray-400",
   },
+  not_assessed: {
+    label: "Not assessed",
+    icon: "…",
+    chip: "bg-slate-50 text-slate-700 border-slate-300 border-dashed",
+    card: "border-dashed border-l-slate-400 bg-slate-50 text-slate-700",
+  },
 };
 
-const STATUS_ORDER: Status[] = ["action_needed", "confirm", "covered", "not_applicable"];
+const STATUS_ORDER: Status[] = [
+  "action_needed",
+  "confirm",
+  "covered",
+  "not_applicable",
+  "not_assessed",
+];
 
 const DISCLAIMER =
   "Informational only, based on your answers and on reviewed sources, not legal advice or a compliance certificate.";
@@ -337,17 +355,19 @@ function Report({ result, stale }: { result: ChecklistResult; stale: boolean }) 
 
       <div className="space-y-1">
         <p className="font-medium">
-          Checks covered: {result.checks_covered} of {result.checks_total}
+          Checks assessed: {result.checks_assessed} of {result.checks_total}
         </p>
         <p className="text-sm text-gray-600">{result.scope}</p>
       </div>
 
-      {result.items.length === 0 ? (
+      {result.checks_assessed === 0 && (
         <p className="text-gray-600">
           No checks could be run right now because none of the underlying
           sources have been reviewed yet.
         </p>
-      ) : (
+      )}
+
+      {result.items.length > 0 && (
         <ol className="space-y-4">
           {result.items.map((item) => (
             <li
@@ -357,29 +377,31 @@ function Report({ result, stale }: { result: ChecklistResult; stale: boolean }) 
               <StatusBadge status={item.status} />
               <h3 className="font-semibold">{item.title}</h3>
               <p>{item.action}</p>
-              <details className="text-sm">
-                <summary className="cursor-pointer font-medium">Why</summary>
-                <div className="mt-2 space-y-2">
-                  <blockquote className="border-l-2 border-gray-300 pl-3 text-gray-700 whitespace-pre-line">
-                    {item.source_excerpt}
-                  </blockquote>
-                  {item.source_url ? (
-                    <p>
-                      Source:{" "}
-                      <a
-                        href={item.source_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline"
-                      >
-                        {hostnameOf(item.source_url)}
-                      </a>
-                    </p>
-                  ) : (
-                    <p className="text-gray-600">No source link available.</p>
-                  )}
-                </div>
-              </details>
+              {item.status !== "not_assessed" && (
+                <details className="text-sm">
+                  <summary className="cursor-pointer font-medium">Why</summary>
+                  <div className="mt-2 space-y-2">
+                    <blockquote className="border-l-2 border-gray-300 pl-3 text-gray-700 whitespace-pre-line">
+                      {item.source_excerpt}
+                    </blockquote>
+                    {item.source_url ? (
+                      <p>
+                        Source:{" "}
+                        <a
+                          href={item.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline"
+                        >
+                          {hostnameOf(item.source_url)}
+                        </a>
+                      </p>
+                    ) : (
+                      <p className="text-gray-600">No source link available.</p>
+                    )}
+                  </div>
+                </details>
+              )}
             </li>
           ))}
         </ol>
