@@ -1,8 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import { RoutePicker, useCountries, useRouteQuery } from "../../lib/countries";
+import UploadPanel, {
+  Extraction,
+  ExtractedNumber,
+  ExtractionSource,
+  SOURCE_TEXT,
+} from "./UploadPanel";
 
 // Mirrors ChecklistProfile / ChecklistResponse in the backend's schemas.py.
 type Status =
@@ -202,6 +208,95 @@ const EXAMPLE_ANSWERS: Answers = {
   invoice_ready: "no",
 };
 
+// Upload extraction only covers the UK checklist form.
+const EXTRACTION_DESTINATION = "UK";
+
+// A form answer suggested by an upload, with the evidence for it.
+type Prefill = { value: string; source: ExtractionSource; quote: string };
+
+// Short names for the pre-filled questions, for the line in the report.
+const PREFILL_NAMES: Record<string, string> = {
+  abv_percent: "ABV",
+  label_uk_address: "UK food business operator address on the label",
+  [labelElementField("english_name")]: "Product name in English",
+  [labelElementField("ingredients_list_with_allergens")]:
+    "Ingredients list with allergens highlighted",
+  [labelElementField("origin_statement")]: "Country of origin on the label",
+};
+
+// Field-level notes that don't fill a field: total sugars beside "Added
+// sugar", an unclear ingredients list, an ABV conflict.
+type ExtractionNotes = {
+  totalSugars: ExtractedNumber | null;
+  ingredientsUnclearQuote: string | null;
+  abvConflict: { label: number; labReport: number } | null;
+};
+
+const NO_NOTES: ExtractionNotes = {
+  totalSugars: null,
+  ingredientsUnclearQuote: null,
+  abvConflict: null,
+};
+
+function prefillsFrom(extraction: Extraction): Record<string, Prefill> {
+  const prefills: Record<string, Prefill> = {};
+  const abv = extraction.abv_percent;
+  if (abv.value !== null && abv.source && abv.quote) {
+    prefills.abv_percent = { value: String(abv.value), source: abv.source, quote: abv.quote };
+  }
+  // Only a found "yes" fills a label question. Not found never becomes "No":
+  // the label may say it in a way that wasn't read.
+  const labelChecks: [keyof Extraction, string][] = [
+    ["label_uk_fbo_address", "label_uk_address"],
+    ["label_product_name_english", labelElementField("english_name")],
+    ["label_ingredients_with_allergens_highlighted", labelElementField("ingredients_list_with_allergens")],
+    ["label_country_of_origin", labelElementField("origin_statement")],
+  ];
+  for (const [key, name] of labelChecks) {
+    const check = extraction[key] as Extraction["label_country_of_origin"];
+    if (check.value === "yes" && check.quote) {
+      prefills[name] = { value: "yes", source: "label", quote: check.quote };
+    }
+  }
+  return prefills;
+}
+
+function notesFrom(extraction: Extraction): ExtractionNotes {
+  const abv = extraction.abv_percent;
+  const ingredients = extraction.label_ingredients_with_allergens_highlighted;
+  return {
+    totalSugars:
+      extraction.total_sugars_g_per_100ml.value !== null
+        ? extraction.total_sugars_g_per_100ml
+        : null,
+    ingredientsUnclearQuote:
+      ingredients.value === "unclear" ? ingredients.quote : null,
+    abvConflict:
+      abv.conflict && abv.label && abv.lab_report
+        ? { label: abv.label.value, labReport: abv.lab_report.value }
+        : null,
+  };
+}
+
+type PrefillSummary = { confirmed: string[]; changed: string[] };
+
+function summarisePrefills(
+  prefills: Record<string, Prefill>,
+  answers: Answers
+): PrefillSummary {
+  const summary: PrefillSummary = { confirmed: [], changed: [] };
+  for (const q of ALL_QUESTIONS) {
+    const prefill = prefills[q.name];
+    if (!prefill) continue;
+    const kept =
+      q.kind === "number"
+        ? parseNumber(answers[q.name] ?? "") === parseNumber(prefill.value)
+        : answers[q.name] === prefill.value;
+    (kept ? summary.confirmed : summary.changed).push(PREFILL_NAMES[q.name]);
+  }
+  return summary;
+}
+
 function parseNumber(raw: string): number | null {
   const normalised = raw.trim().replace(",", ".");
   if (!/^\d+(\.\d+)?$/.test(normalised)) return null;
@@ -321,10 +416,12 @@ function Report({
   result,
   stale,
   routeLabel,
+  prefillSummary,
 }: {
   result: ChecklistResult;
   stale: boolean;
   routeLabel: string;
+  prefillSummary: PrefillSummary | null;
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
 
@@ -361,6 +458,25 @@ function Report({
       )}
 
       <p className="font-medium">{routeLabel}</p>
+
+      {prefillSummary &&
+        (prefillSummary.confirmed.length > 0 ||
+          prefillSummary.changed.length > 0) && (
+          <div className="text-sm text-gray-700 space-y-1">
+            {prefillSummary.confirmed.length > 0 && (
+              <p>
+                Pre-filled from your uploaded label or lab report and confirmed
+                by you: {prefillSummary.confirmed.join(", ")}.
+              </p>
+            )}
+            {prefillSummary.changed.length > 0 && (
+              <p>
+                Pre-filled from your uploads and then changed by you:{" "}
+                {prefillSummary.changed.join(", ")}.
+              </p>
+            )}
+          </div>
+        )}
 
       <p className="text-lg">{result.headline}</p>
 
@@ -482,6 +598,9 @@ export default function ProductChecker() {
   const [result, setResult] = useState<ChecklistResult | null>(null);
   const [outOfScope, setOutOfScope] = useState<string | null>(null);
   const [submittedProfile, setSubmittedProfile] = useState<string | null>(null);
+  const [prefills, setPrefills] = useState<Record<string, Prefill>>({});
+  const [notes, setNotes] = useState<ExtractionNotes>(NO_NOTES);
+  const [prefillSummary, setPrefillSummary] = useState<PrefillSummary | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   useExpandDetailsForPrint();
@@ -492,8 +611,31 @@ export default function ProductChecker() {
     if (attempted) setErrors(validate(next));
   }
 
+  function clearExtraction() {
+    setPrefills({});
+    setNotes(NO_NOTES);
+  }
+
+  function applyExtraction(extraction: Extraction) {
+    const next = prefillsFrom(extraction);
+    const updated = { ...answers };
+    // Answers left from an earlier upload that this one didn't find are
+    // cleared, unless the user has since changed them.
+    for (const [name, old] of Object.entries(prefills)) {
+      if (!next[name] && updated[name] === old.value) delete updated[name];
+    }
+    for (const [name, prefill] of Object.entries(next)) {
+      updated[name] = prefill.value;
+    }
+    setAnswers(updated);
+    if (attempted) setErrors(validate(updated));
+    setPrefills(next);
+    setNotes(notesFrom(extraction));
+  }
+
   function onDestinationChange(code: string | null) {
     update({ to: code });
+    if (code !== EXTRACTION_DESTINATION) clearExtraction();
     setRequestError(null);
     setResult(null);
     setOutOfScope(null);
@@ -501,6 +643,7 @@ export default function ProductChecker() {
 
   function loadExample() {
     setAnswers(EXAMPLE_ANSWERS);
+    clearExtraction();
     setErrors({});
     setAttempted(false);
     setRequestError(null);
@@ -550,6 +693,7 @@ export default function ProductChecker() {
       } else {
         setResult(data as ChecklistResult);
         setSubmittedProfile(JSON.stringify({ to, profile }));
+        setPrefillSummary(summarisePrefills(prefills, answers));
       }
     } catch {
       setRequestError(
@@ -618,6 +762,11 @@ export default function ProductChecker() {
         </div>
       )}
 
+      {destination?.checklist_available &&
+        destination.code === EXTRACTION_DESTINATION && (
+          <UploadPanel onExtracted={applyExtraction} />
+        )}
+
       {destination?.checklist_available && (
         <form
           ref={formRef}
@@ -652,7 +801,31 @@ export default function ProductChecker() {
                     value={answers[q.name] ?? ""}
                     error={errors[q.name]}
                     onChange={(v) => setAnswer(q.name, v)}
-                  />
+                  >
+                    <PrefillNote
+                      prefill={prefills[q.name]}
+                      kept={
+                        parseNumber(answers[q.name] ?? "") ===
+                        parseNumber(prefills[q.name]?.value ?? "")
+                      }
+                    />
+                    {q.name === "abv_percent" && notes.abvConflict && (
+                      <p
+                        role="alert"
+                        className="rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900"
+                      >
+                        <span aria-hidden="true">⚠ </span>
+                        Your label says {notes.abvConflict.label}% ABV, but
+                        your lab report says {notes.abvConflict.labReport}%.
+                        We&apos;ve filled in the lab report value. Check which
+                        one is right.
+                      </p>
+                    )}
+                    {q.name === "added_sugar_g_per_100ml" &&
+                      notes.totalSugars && (
+                        <TotalSugarsHint sugars={notes.totalSugars} />
+                      )}
+                  </NumberInput>
                 ) : (
                   <RadioGroup
                     key={q.name}
@@ -660,7 +833,22 @@ export default function ProductChecker() {
                     value={answers[q.name] ?? ""}
                     error={errors[q.name]}
                     onChange={(v) => setAnswer(q.name, v)}
-                  />
+                  >
+                    <PrefillNote
+                      prefill={prefills[q.name]}
+                      kept={answers[q.name] === prefills[q.name]?.value}
+                    />
+                    {q.name === labelElementField("ingredients_list_with_allergens") &&
+                      !prefills[q.name] &&
+                      notes.ingredientsUnclearQuote && (
+                        <p className="text-sm text-gray-600">
+                          We found an ingredients list on your label but
+                          couldn&apos;t tell whether allergens are highlighted.
+                          Please check:{" "}
+                          <q className="italic">{notes.ingredientsUnclearQuote}</q>
+                        </p>
+                      )}
+                  </RadioGroup>
                 )
               )}
             </fieldset>
@@ -692,7 +880,12 @@ export default function ProductChecker() {
       </div>
 
       {result && (
-        <Report result={result} stale={stale} routeLabel={routeLabel} />
+        <Report
+          result={result}
+          stale={stale}
+          routeLabel={routeLabel}
+          prefillSummary={prefillSummary}
+        />
       )}
 
       <footer className="border-t pt-4 text-sm text-gray-600">
@@ -702,16 +895,60 @@ export default function ProductChecker() {
   );
 }
 
+function PrefillNote({
+  prefill,
+  kept,
+}: {
+  prefill?: Prefill;
+  kept: boolean;
+}) {
+  if (!prefill) return null;
+  return (
+    <p className="text-sm text-gray-600">
+      {kept ? (
+        <span className="font-medium text-gray-800">{SOURCE_TEXT[prefill.source]}</span>
+      ) : (
+        <span className="font-medium text-gray-800">
+          You changed this. {SOURCE_TEXT[prefill.source]}:
+        </span>
+      )}{" "}
+      <q className="italic">{prefill.quote}</q>
+    </p>
+  );
+}
+
+function TotalSugarsHint({ sugars }: { sugars: ExtractedNumber }) {
+  return (
+    <p className="text-sm text-gray-600">
+      {sugars.source ? SOURCE_TEXT[sugars.source] : "From your upload"}: total
+      sugars {sugars.value} g per 100 ml
+      {sugars.converted_from_unit
+        ? ` (converted from ${sugars.original_text})`
+        : ""}
+      . Total sugars include sugar naturally present in juice, so they are not
+      the same as added sugar. Enter the added sugar yourself.
+      {sugars.quote && (
+        <>
+          {" "}
+          <q className="italic">{sugars.quote}</q>
+        </>
+      )}
+    </p>
+  );
+}
+
 function NumberInput({
   question,
   value,
   error,
   onChange,
+  children,
 }: {
   question: NumberQuestion;
   value: string;
   error?: string;
   onChange: (value: string) => void;
+  children?: ReactNode;
 }) {
   const id = `q-${question.name}`;
   const describedBy = [
@@ -751,6 +988,7 @@ function NumberInput({
         />
         <span aria-hidden="true">{question.unit}</span>
       </div>
+      {children}
     </div>
   );
 }
@@ -760,11 +998,13 @@ function RadioGroup({
   value,
   error,
   onChange,
+  children,
 }: {
   question: RadioQuestion;
   value: string;
   error?: string;
   onChange: (value: string) => void;
+  children?: ReactNode;
 }) {
   const id = `q-${question.name}`;
   const describedBy = [
@@ -805,6 +1045,7 @@ function RadioGroup({
           </label>
         ))}
       </div>
+      {children}
     </fieldset>
   );
 }
